@@ -52,10 +52,11 @@ def get_save_dir(mode, model, cot, temperature):
     return os.path.join(base_dir, "generations.json")
         
 if __name__ == "__main__":
-    models = ["gpt-3.5-turbo-0613", "gpt-4-0613"]
+    # models = ["gpt-3.5-turbo-0613", "gpt-4-0613"]
+    models = ['gpt-4.1']
     modes = ["input", "output"]
-    cots = [False, True]
+    cots = [True]
     temperatures = [0.2, 0.8]
     for model, mode, cot, temperature in product(models, modes, cots, temperatures):
         run_openai(model, mode, cot, temperature)
-        break # comment out to run the whole thing $$
+        # break # comment out to run the whole thing $$

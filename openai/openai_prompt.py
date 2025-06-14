@@ -2,10 +2,30 @@
 
 import random
 import json
-from openai import OpenAI
+# from openai import OpenAI
 from concurrent.futures import ThreadPoolExecutor
 import os
 import sys
+import logging
+import time
+import openai
+
+__API_RETRY_LIMIT = 3
+__RETRY_TIMEOUT = [10, 60, 300]
+
+oai_api_key = "../../openai.key"
+if 'OPENAI_API_KEY' not in os.environ:
+    if os.path.exists(oai_api_key):
+        key_chain = open(oai_api_key, 'r').read().splitlines()[0]
+        os.environ['OPENAI_API_KEY'] = key_chain
+
+deepseek_api_key = "../../deepseek.key"
+if 'DEEPSEEK_API_KEY' not in os.environ:
+    if os.path.exists(deepseek_api_key):
+        key_chain = open(deepseek_api_key, 'r').read().splitlines()[0]
+        os.environ['DEEPSEEK_API_KEY'] = key_chain
+        __deepseek_clinet = openai.OpenAI(
+            api_key=os.environ['DEEPSEEK_API_KEY'], base_url="https://api.deepseek.com")
 
 sys.path.append("..")
 from prompts import (
@@ -13,10 +33,6 @@ from prompts import (
     make_cot_output_prompt,
     make_direct_input_prompt,
     make_cot_input_prompt,
-)
-
-client = OpenAI(
-    api_key=os.environ.get("OPENAI_API_KEY"),
 )
 
 def extract_answer_direct_output(gen):
@@ -52,25 +68,55 @@ def extract_answer_cot_output(gen):
         return gen.split('\n')[-1].strip()
 
 def call_openai_api(system_prompt, prompt, temperature, n, model, max_tokens, stop) -> list[str]:
-    print("not cached")
-    prompt = [
+    # print("not cached")
+    formatted_messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": prompt}
     ]
-    while True:
-        try:
-            result = client.chat.completions.create(
+    return do_request_oai(formatted_messages, temperature, n, model, max_tokens, stop)
+
+def do_request_oai(formatted_messages, temperature, n, model, max_tokens, stop, _retry=0, _last_emsg=None) -> list[str]:
+    try:
+        # if model has "deepseek" in it, use deepseek API
+        if "deepseek" in model:
+            completion = __deepseek_clinet.chat.completions.create(
                 model=model,
-                messages=prompt,
+                messages=formatted_messages,
                 temperature=temperature,
-                n=n,
                 max_tokens=max_tokens,
-                stop=stop
+                stream=False,
             )
-            break
-        except:
-            import time; time.sleep(10); pass
-    return [result.choices[i].message.content for i in range(n)]
+            # if 'reasoning_content' in completion.choices[0].message:
+            reasoning_content = getattr(
+                completion.choices[0].message, 'reasoning_content', None)
+            if reasoning_content:
+                logging.info(
+                    f"Deepseek API reasoning content: {reasoning_content}")
+        else:
+            completion = openai.chat.completions.create(
+                model=model,
+                messages=formatted_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+
+    except Exception as e:
+        logging.error(e)
+        emsg = str(e)
+
+        if _last_emsg is not None and emsg[:60] == _last_emsg[:60]:
+            logging.info("Same error")
+            return '{"ret": "failed", "response": "' + emsg[:200] + '"}'
+
+        if _retry < __API_RETRY_LIMIT and ("context_length_exceeded" not in emsg):
+            time.sleep(__RETRY_TIMEOUT[_retry])
+            logging.info(f"Retrying {_retry + 1} time(s)...")
+            # return call_openai_api(model, temperature, max_tokens, formatted_messages, _retry + 1, emsg)
+            return call_openai_api(formatted_messages, temperature, n, model, max_tokens, stop, _retry + 1, emsg)
+        else:
+            return '{"ret": "failed", "response": "' + emsg[:200] + '"}'
+
+    return [completion.choices[0].message.content]
 
 def prompt_openai_general(make_prompt_fn, i, cache, gpt_query, temperature, n, model, max_tokens, stop) -> tuple[str, list[str]]:
     x = random.randint(1, 1000)
